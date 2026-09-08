@@ -19,6 +19,19 @@ DYMO Label v8 is a 32-bit-era app that breaks on recent macOS and Apple Silicon,
 - **Allergen bolding** for UK/EU food labels — auto-bolds the 14 FSA allergens (egg, soya, milk, wheat, nuts…), or bold any words yourself with `**double asterisks**`.
 - Left / centre / right alignment, adjustable margin.
 - Remembers your last label between sessions.
+- **Direct USB printing (experimental)** — prints straight to the printer over WebUSB, with no OS print driver at all (see below).
+
+## Direct USB printing (experimental)
+
+The **Direct USB** panel talks to the LabelWriter directly from the browser over WebUSB: it rasterises the label to a 300 dpi 1-bit bitmap and streams the LabelWriter raster protocol to the printer's bulk endpoint. No CUPS queue, no DYMO helper, no driver — which means it keeps working even on an OS that has dropped support for the printer's driver (e.g. macOS releases without Rosetta / classic CUPS drivers).
+
+Chrome or Edge only (WebUSB). To use it: click **Connect printer**, pick your LabelWriter, then **Print via USB**. The `Rotate 90°` toggle orients the bitmap along the feed direction (on for address/ingredient labels).
+
+Status: **verified end to end on a LabelWriter 400 Turbo (macOS 27, Apple Silicon)** — prints a correct label with no driver installed at all. The command constants live at the top of the WebUSB block in `index.html`; other LabelWriter models may need a small tweak.
+
+Troubleshooting:
+- **Printer not in the picker** — reseat its USB / dock connection so the OS re-enumerates it, then reconnect.
+- **"claim"/"busy" error on connect** — the OS print queue is holding the device; pause or remove the DYMO queue in your printer settings, replug, and reconnect.
 
 ## Use it
 

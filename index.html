@@ -62,12 +62,25 @@
     .scaler{transform:none!important;margin:0;width:auto!important;height:auto!important}
     .label{box-shadow:none!important;position:fixed;top:0;left:0}
   }
+  .usb{border-top:1px solid var(--line);padding-top:14px;display:flex;flex-direction:column;gap:10px}
+  .usb h2{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;
+    letter-spacing:.04em;margin:0;display:flex;align-items:center;gap:8px}
+  .usb .btns{display:flex;gap:8px}
+  .usb button{flex:1;border:1px solid var(--line);background:var(--field);color:var(--ink);
+    border-radius:8px;padding:9px;font-size:13px;cursor:pointer}
+  .usb button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
+  .usb button:disabled{opacity:.5;cursor:not-allowed}
+  .badge{font-size:10.5px;font-weight:500;padding:2px 7px;border-radius:999px;
+    background:var(--bg);color:var(--muted);text-transform:none;letter-spacing:0}
+  .log{font:11px/1.45 ui-monospace,Menlo,Consolas,monospace;background:var(--bg);
+    border:1px solid var(--line);border-radius:8px;padding:8px;max-height:160px;
+    overflow:auto;white-space:pre-wrap;color:var(--muted)}
 </style>
 </head>
 <body>
 <header>
   <h1>LabelPress</h1>
-  <span class="sub">Print to any DYMO LabelWriter through the system dialog — no DYMO software needed.</span>
+  <span class="sub">Print to any DYMO LabelWriter — through the system dialog, or straight over USB with no driver at all.</span>
 </header>
 
 <div class="wrap">
@@ -114,6 +127,16 @@
     <label class="chk"><input type="checkbox" id="autofit" checked> Auto-fit: shrink font until it fits</label>
 
     <button class="print-btn" id="printBtn">Print / Save as PDF…</button>
+
+    <div class="usb">
+      <h2>Direct USB — experimental <span class="badge" id="usbState">not connected</span></h2>
+      <div class="btns">
+        <button id="usbConnect">Connect printer</button>
+        <button id="usbPrint" class="primary" disabled>Print via USB</button>
+      </div>
+      <label class="chk"><input type="checkbox" id="usbRotate" checked> Rotate 90° (address/ingredient labels)</label>
+      <div class="log" id="usbLog">Prints straight to the printer over USB — no driver, no OS print system. Chrome or Edge only. Connect your LabelWriter to begin.</div>
+    </div>
   </div>
 
   <div class="stage">
@@ -248,6 +271,150 @@ window.addEventListener("beforeunload",()=>{try{
 
 $("customDims").style.display = ROLLS[+rollSel.value][1]===null ? "flex":"none";
 draw();
+
+/* ================= WebUSB direct printing (experimental) =================
+   Renders the label to a 300 dpi 1-bit bitmap and streams the DYMO
+   LabelWriter raster protocol straight to the printer over USB.
+   No CUPS, no driver, no OS print system. Chrome / Edge only.
+   These command bytes match the LabelWriter raster command set; if the
+   output is offset/rotated on your unit, tweak ROTATE / the ESC constants. */
+const DYMO_VENDOR = 0x0922;         // DYMO USB vendor id
+const DPI = 300;
+let usbDev=null, usbEpOut=null, usbIface=null;
+const ulog=m=>{const el=$("usbLog"); el.textContent+="\n"+m; el.scrollTop=el.scrollHeight;};
+const usbStateEl=()=>$("usbState");
+
+/* split one text line into styled runs {t, b(old)} using the same
+   manual-** and allergen rules as the on-screen render */
+function lineToRuns(line){
+  const auto=$("allergen").checked;
+  const parts=line.split("**");
+  const runs=[];
+  parts.forEach((p,i)=>{
+    const manual=i%2===1;
+    if(!auto){ if(p) runs.push({t:p,b:manual}); return; }
+    const re=new RegExp(ALLERGEN_RE.source,"gi"); let last=0,mm;
+    while((mm=re.exec(p))){
+      if(mm.index>last) runs.push({t:p.slice(last,mm.index),b:manual});
+      runs.push({t:mm[0],b:true});
+      last=mm.index+mm[0].length;
+    }
+    if(last<p.length) runs.push({t:p.slice(last),b:manual});
+  });
+  return runs.filter(r=>r.t.length);
+}
+
+/* draw the label to a canvas at 300 dpi (screen orientation) */
+function drawLabelCanvas(){
+  const [W,H]=currentRoll();
+  const m=parseFloat($("margin").value)||0;
+  const wdots=Math.round(W/25.4*DPI), hdots=Math.round(H/25.4*DPI);
+  const pad=Math.round(m/25.4*DPI);
+  const fpx=(parseFloat($("size").value)||7)*DPI/72, lh=fpx*1.2, maxW=wdots-2*pad;
+  const c=document.createElement("canvas"); c.width=wdots; c.height=hdots;
+  const x=c.getContext("2d");
+  x.fillStyle="#fff"; x.fillRect(0,0,wdots,hdots);
+  x.fillStyle="#000"; x.textBaseline="top";
+  const setF=b=>x.font=(b?"bold ":"")+fpx+"px Arial,Helvetica,sans-serif";
+  const vlines=[];
+  text.value.split("\n").forEach(line=>{
+    const runs=lineToRuns(line); const toks=[];
+    runs.forEach(r=>r.t.split(/(\s+)/).forEach(s=>{ if(s.length) toks.push({t:s,b:r.b}); }));
+    if(!toks.length){ vlines.push([]); return; }
+    let cur=[],curW=0;
+    toks.forEach(tk=>{ setF(tk.b); const w=x.measureText(tk.t).width;
+      if(curW+w>maxW && cur.length && !/^\s+$/.test(tk.t)){ vlines.push(cur); cur=[]; curW=0; }
+      if(curW===0 && /^\s+$/.test(tk.t)) return;
+      cur.push(tk); curW+=w;
+    });
+    if(cur.length) vlines.push(cur);
+  });
+  let y=Math.max(pad,(hdots-vlines.length*lh)/2);
+  vlines.forEach(line=>{
+    let lineW=0; line.forEach(tk=>{setF(tk.b); lineW+=x.measureText(tk.t).width;});
+    let cx = align==="center" ? (wdots-lineW)/2 : align==="right" ? (wdots-pad-lineW) : pad;
+    line.forEach(tk=>{ setF(tk.b); x.fillText(tk.t,cx,y); cx+=x.measureText(tk.t).width; });
+    y+=lh;
+  });
+  return c;
+}
+
+/* rotate 90° so the label prints along the feed direction */
+function rasterize(rotate){
+  const c=drawLabelCanvas();
+  if(!rotate) return c;
+  const pc=document.createElement("canvas"); pc.width=c.height; pc.height=c.width;
+  const p=pc.getContext("2d"); p.translate(c.height,0); p.rotate(Math.PI/2); p.drawImage(c,0,0);
+  return pc;
+}
+
+/* pack canvas to 1 bit-per-pixel rows, MSB first, 1 = black dot */
+function packRaster(canvas){
+  const w=canvas.width,h=canvas.height;
+  const d=canvas.getContext("2d").getImageData(0,0,w,h).data;
+  const bpl=Math.ceil(w/8), rows=[];
+  for(let y=0;y<h;y++){
+    const row=new Uint8Array(bpl);
+    for(let xp=0;xp<w;xp++){
+      const i=(y*w+xp)*4, lum=0.299*d[i]+0.587*d[i+1]+0.114*d[i+2];
+      if(d[i+3]>128 && lum<128) row[xp>>3]|=(0x80>>(xp&7));
+    }
+    rows.push(row);
+  }
+  return {bpl,lines:h,rows};
+}
+
+async function usbConnect(){
+  if(!('usb' in navigator)){ ulog("✖ WebUSB not available — use Chrome or Edge."); return; }
+  try{ usbDev=await navigator.usb.requestDevice({filters:[{vendorId:DYMO_VENDOR}]}); }
+  catch(e){ ulog("No device selected. If the printer isn't in the list, reseat its USB / dock connection and try again."); return; }
+  try{
+    await usbDev.open();
+    if(!usbDev.configuration) await usbDev.selectConfiguration(1);
+    ulog("Device: "+(usbDev.productName||"?")+"  vid=0x"+usbDev.vendorId.toString(16)+
+         " pid=0x"+usbDev.productId.toString(16));
+    let found=false;
+    for(const iface of usbDev.configuration.interfaces)
+      for(const alt of iface.alternates)
+        for(const ep of alt.endpoints){
+          ulog("  iface "+iface.interfaceNumber+" class 0x"+alt.interfaceClass.toString(16)+
+               "  ep "+ep.endpointNumber+" "+ep.direction+"/"+ep.type);
+          if(ep.direction==="out"&&ep.type==="bulk"&&!found){ usbIface=iface.interfaceNumber; usbEpOut=ep.endpointNumber; found=true; }
+        }
+    if(!found){ ulog("✖ No bulk OUT endpoint found."); return; }
+    await usbDev.claimInterface(usbIface);
+    usbStateEl().textContent="connected"; $("usbPrint").disabled=false;
+    ulog("✓ Connected. Interface "+usbIface+", OUT endpoint "+usbEpOut+". Ready.");
+  }catch(e){
+    ulog("✖ "+e.name+": "+e.message);
+    if(/claim|access|protected|busy|denied/i.test(String(e)))
+      ulog("  The OS print queue may be holding the printer. In System Settings → Printers &\n"+
+           "  Scanners, remove (or pause) the DYMO queue, unplug/replug the printer, then reconnect.");
+  }
+}
+
+async function usbPrint(){
+  if(!usbDev||usbEpOut==null){ ulog("Not connected."); return; }
+  try{
+    draw();
+    const canvas=rasterize($("usbRotate").checked);
+    const {bpl,lines,rows}=packRaster(canvas);
+    ulog("Raster "+canvas.width+"×"+lines+" dots, "+bpl+" bytes/line…");
+    const ESC=0x1b,SYN=0x16,out=[];
+    out.push(ESC,0x42,0);                              // dot tab = 0
+    out.push(ESC,0x44,bpl);                            // bytes per line
+    out.push(ESC,0x4c, lines&0xff,(lines>>8)&0xff);    // label length (lines)
+    for(const r of rows){ out.push(SYN); for(const b of r) out.push(b); }
+    out.push(ESC,0x45);                                // form feed
+    const buf=new Uint8Array(out), CH=16384;
+    for(let o=0;o<buf.length;o+=CH) await usbDev.transferOut(usbEpOut, buf.slice(o,o+CH));
+    ulog("✓ Sent "+buf.length+" bytes. Check the printer.");
+  }catch(e){ ulog("✖ print error: "+e.name+": "+e.message); }
+}
+
+$("usbConnect").addEventListener("click",usbConnect);
+$("usbPrint").addEventListener("click",usbPrint);
+if(!('usb' in navigator)){ $("usbConnect").disabled=true; usbStateEl().textContent="no WebUSB"; }
 </script>
 </body>
 </html>
