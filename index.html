@@ -46,6 +46,17 @@
   .print-btn{margin-top:auto;background:var(--accent);color:var(--accent-ink);
     border:0;border-radius:9px;padding:12px;font-size:15px;font-weight:600;cursor:pointer}
   .print-btn:hover{filter:brightness(1.06)}
+  .print-btn:disabled{opacity:.5;cursor:not-allowed}
+  [hidden]{display:none!important}
+  .list,.list .box{display:flex;flex-direction:column;gap:8px}
+  .list label.f{margin:0}
+  .rows{border:1px solid var(--line);border-radius:8px;max-height:220px;overflow:auto;background:var(--field)}
+  .rows .chk{padding:6px 9px;font-size:12.5px;border-bottom:1px solid var(--line)}
+  .rows .chk:last-child{border-bottom:0}
+  .rows .chk.on{background:var(--bg)}
+  .rows .chk input{flex:none}
+  .rows .chk span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #batch{display:none}
   .dims{color:var(--muted);font-size:12.5px;text-align:center}
   /* label surface — rendered at real mm, scaled up on screen only */
   .scaler{transform-origin:top left;margin:0 auto}
@@ -61,12 +72,17 @@
     .stage{padding:0;display:block}
     .scaler{transform:none!important;margin:0;width:auto!important;height:auto!important}
     .label{box-shadow:none!important;position:fixed;top:0;left:0}
+    /* address list: one label per page */
+    body.batch .scaler{display:none!important}
+    body.batch #batch{display:block}
+    #batch .label{position:static;break-after:page;page-break-after:always}
+    #batch .label:last-child{break-after:auto;page-break-after:auto}
   }
   .usb{border-top:1px solid var(--line);padding-top:14px;display:flex;flex-direction:column;gap:10px}
   .usb h2{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;
     letter-spacing:.04em;margin:0;display:flex;align-items:center;gap:8px}
-  .usb .btns{display:flex;gap:8px}
-  .usb button{flex:1;border:1px solid var(--line);background:var(--field);color:var(--ink);
+  .usb .btns,.list .btns{display:flex;gap:8px}
+  .usb button,.list button{flex:1;border:1px solid var(--line);background:var(--field);color:var(--ink);
     border-radius:8px;padding:9px;font-size:13px;cursor:pointer}
   .usb button.primary{background:var(--accent);color:var(--accent-ink);border-color:transparent}
   .usb button:disabled{opacity:.5;cursor:not-allowed}
@@ -95,10 +111,29 @@
       <div class="dims" id="dimLabel" style="text-align:left;margin-top:8px"></div>
     </div>
 
+    <div class="list">
+      <label class="f" for="listFile">Address list</label>
+      <div class="btns">
+        <button id="listPick">Load CSV / Excel…</button>
+        <button id="listClear" hidden>Remove list</button>
+      </div>
+      <input type="file" id="listFile" accept=".csv,.tsv,.txt,.xlsx" hidden>
+      <div class="box" id="listBox" hidden>
+        <label class="chk"><input type="checkbox" id="listHeader" checked> First row is column names</label>
+        <input type="text" id="listFilter" placeholder="Filter…">
+        <div class="rows" id="listRows"></div>
+        <div class="btns">
+          <button id="listAll">Select all</button>
+          <button id="listNone">Select none</button>
+        </div>
+      </div>
+      <div class="hint" id="listInfo">Print one label per row of a .csv or .xlsx file. The file never leaves your browser.</div>
+    </div>
+
     <div>
       <label class="f" for="text">Text</label>
       <textarea id="text" spellcheck="false"></textarea>
-      <div class="hint">Wrap words in <code>**double asterisks**</code> to bold them manually.</div>
+      <div class="hint" id="textHint">Wrap words in <code>**double asterisks**</code> to bold them manually.</div>
     </div>
 
     <label class="chk"><input type="checkbox" id="allergen"> Auto-bold UK allergens (egg, soya, milk, wheat…)</label>
@@ -141,6 +176,7 @@
 
   <div class="stage">
     <div class="scaler"><div class="label" id="label"><div class="inner" id="inner"><div id="content"></div></div></div></div>
+    <div id="batch"></div>
     <div class="dims" id="fitInfo"></div>
   </div>
 </div>
@@ -201,6 +237,33 @@ function currentRoll(){
 
 function fits(){ return inner.scrollHeight <= label.clientHeight + 0.5; }
 
+/* ---- address list: the Text box becomes a template with {Column} fields ---- */
+let list=null;        // {name, raw, fields, keys, rows, sel, size}
+let activeRow=0;      // row shown in the preview
+let plainText=null;   // what was in the Text box before a list was loaded
+
+function colName(i){let s="";for(i++;i>0;i=Math.floor((i-1)/26))s=String.fromCharCode(65+(i-1)%26)+s;return s;}
+
+/* fill {Column} fields from one row; lines whose fields are all empty are dropped */
+function merge(tpl,row){
+  const out=[];
+  tpl.split("\n").forEach(line=>{
+    let hit=false;
+    const s=line.replace(/\{([^{}]+)\}/g,(m,k)=>{
+      const i=list.keys.indexOf(k.trim().toLowerCase());
+      if(i<0) return m;
+      hit=true; return row[i]||"";
+    });
+    if(!hit){ out.push(line); return; }
+    s.split("\n").forEach(l=>{ l=l.replace(/^[\s,]+|[\s,]+$/g,""); if(l) out.push(l); });
+  });
+  return out.join("\n");
+}
+
+function labelText(){
+  return list&&list.rows.length ? merge(text.value,list.rows[activeRow]) : text.value;
+}
+
 function draw(){
   const [W,H] = currentRoll();
   const m = parseFloat($("margin").value)||0;
@@ -209,7 +272,7 @@ function draw(){
   label.style.padding = m+"mm";
   inner.style.textAlign = align;
   inner.style.justifyContent = "center"; // vertical centering
-  content.innerHTML = renderText(text.value);
+  content.innerHTML = renderText(labelText());
   $("pagesize").textContent = "@page{size:"+W+"mm "+H+"mm;margin:0}";
   $("dimLabel").textContent = W+" × "+H+" mm";
 
@@ -250,7 +313,181 @@ document.querySelectorAll("#align button").forEach(b=>b.addEventListener("click"
   document.querySelectorAll("#align button").forEach(x=>x.setAttribute("aria-pressed", x===b));
   draw();
 }));
-$("printBtn").addEventListener("click",()=>{draw();window.print();});
+$("printBtn").addEventListener("click",()=>{
+  if(!list){ draw(); window.print(); return; }
+  // one fitted copy of the label per selected row, each on its own page
+  const batch=$("batch"); batch.textContent="";
+  eachSelected(()=>{
+    const n=label.cloneNode(true);
+    n.removeAttribute("id"); n.querySelectorAll("[id]").forEach(e=>e.removeAttribute("id"));
+    batch.appendChild(n);
+  }).then(()=>{ document.body.classList.add("batch"); window.print(); });
+});
+window.addEventListener("afterprint",()=>{ document.body.classList.remove("batch"); $("batch").textContent=""; });
+
+/* ---- address list: file parsing ---- */
+function decodeText(buf){
+  const u=new Uint8Array(buf);
+  if(u[0]===0xff&&u[1]===0xfe) return new TextDecoder("utf-16le").decode(buf);
+  try{ return new TextDecoder("utf-8",{fatal:true}).decode(buf); }
+  catch(e){ return new TextDecoder("windows-1252").decode(buf); }   // older Excel exports
+}
+
+/* quoted fields, doubled quotes, line breaks inside quotes; delimiter is , ; or tab */
+function parseCSV(s){
+  const head=s.slice(0,s.search(/\r|\n|$/));
+  const d=[",",";","\t"].map(c=>[head.split(c).length,c]).sort((a,b)=>b[0]-a[0])[0][1];
+  const rows=[]; let row=[],cell="",q=false;
+  for(let i=0;i<s.length;i++){
+    const ch=s[i];
+    if(q){ if(ch!=='"') cell+=ch; else if(s[i+1]==='"'){ cell+='"'; i++; } else q=false; }
+    else if(ch==='"'&&cell==="") q=true;
+    else if(ch===d){ row.push(cell); cell=""; }
+    else if(ch==="\n"||ch==="\r"){
+      if(ch==="\r"&&s[i+1]==="\n") i++;
+      row.push(cell); rows.push(row); row=[]; cell="";
+    }
+    else cell+=ch;
+  }
+  if(cell!==""||row.length){ row.push(cell); rows.push(row); }
+  return rows;
+}
+
+/* an .xlsx is a zip of XML files: read the zip directory, inflate with the
+   browser's own DecompressionStream, and return a name → XML document lookup */
+function unzip(buf){
+  const v=new DataView(buf), u=new Uint8Array(buf), files={};
+  let e=buf.byteLength-22;
+  while(e>=0&&v.getUint32(e,true)!==0x06054b50) e--;
+  if(e<0) throw new Error("This doesn't look like a valid .xlsx file.");
+  let p=v.getUint32(e+16,true);
+  for(let n=v.getUint16(e+10,true);n>0;n--){
+    const nl=v.getUint16(p+28,true), lo=v.getUint32(p+42,true);
+    const start=lo+30+v.getUint16(lo+26,true)+v.getUint16(lo+28,true);
+    files[new TextDecoder().decode(u.subarray(p+46,p+46+nl))]=
+      {stored:v.getUint16(p+10,true)===0, data:u.subarray(start,start+v.getUint32(p+20,true))};
+    p+=46+nl+v.getUint16(p+30,true)+v.getUint16(p+32,true);
+  }
+  return async name=>{
+    const f=files[name]; if(!f) return null;
+    const bytes=f.stored ? f.data : await new Response(
+      new Blob([f.data]).stream().pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer();
+    return new DOMParser().parseFromString(new TextDecoder().decode(bytes),"application/xml");
+  };
+}
+
+/* first worksheet of the workbook, as rows of strings */
+async function parseXLSX(buf){
+  const xml=unzip(buf);
+  const wb=await xml("xl/workbook.xml"), rels=await xml("xl/_rels/workbook.xml.rels");
+  let path="xl/worksheets/sheet1.xml";
+  const first=wb&&wb.getElementsByTagName("sheet")[0];
+  if(first&&rels) for(const r of rels.getElementsByTagName("Relationship"))
+    if(r.getAttribute("Id")===first.getAttribute("r:id")){
+      const t=r.getAttribute("Target"); path=t[0]==="/" ? t.slice(1) : "xl/"+t;
+    }
+  const sheet=await xml(path);
+  if(!sheet) throw new Error("No worksheet found in this file.");
+  const str=el=>[...el.getElementsByTagName("t")].filter(t=>t.parentNode.nodeName!=="rPh")
+    .map(t=>t.textContent).join("");
+  const sst=await xml("xl/sharedStrings.xml");
+  const shared=sst ? [...sst.getElementsByTagName("si")].map(str) : [];
+  return [...sheet.getElementsByTagName("row")].map(row=>{
+    const out=[]; let col=0;
+    for(const c of row.getElementsByTagName("c")){
+      const ref=(c.getAttribute("r")||"").replace(/\d+/g,"");
+      if(ref) col=[...ref].reduce((n,ch)=>n*26+ch.charCodeAt(0)-64,0)-1;
+      const t=c.getAttribute("t"), v=c.getElementsByTagName("v")[0], raw=v?v.textContent:"";
+      out[col++] = t==="s" ? (shared[+raw]||"") : t==="inlineStr" ? str(c) : raw;
+    }
+    return out;
+  });
+}
+
+/* ---- address list: UI ---- */
+const TEXT_HINT=$("textHint").innerHTML, LIST_HINT=$("listInfo").textContent;
+
+async function loadList(file){
+  try{
+    const buf=await file.arrayBuffer();
+    const magic=buf.byteLength>=4 ? new DataView(buf).getUint32(0,true) : 0;
+    if(magic===0xe011cfd0) throw new Error("Old .xls and password-protected files aren't supported — save as .xlsx or CSV.");
+    const raw=(magic===0x04034b50 ? await parseXLSX(buf) : parseCSV(decodeText(buf)))
+      .map(r=>Array.from(r,c=>String(c==null?"":c).replace(/\r\n?/g,"\n")))
+      .filter(r=>r.some(c=>c.trim()));
+    if(!raw.length) throw new Error("No rows found in "+file.name+".");
+    if(!list) plainText=text.value;
+    list={name:file.name,raw,size:$("size").value};
+    $("listFilter").value="";
+    buildList();
+  }catch(e){ $("listInfo").textContent="✖ "+e.message; }
+}
+
+/* (re)read the rows as with/without a header line and reset the template */
+function buildList(){
+  const hdr=$("listHeader").checked&&list.raw.length>1;
+  const n=list.raw.reduce((m,r)=>Math.max(m,r.length),0);
+  list.fields=[...Array(n)].map((_,i)=>(hdr&&(list.raw[0][i]||"").replace(/[{}]/g,"").trim())||colName(i));
+  list.keys=list.fields.map(f=>f.toLowerCase());
+  list.rows=hdr ? list.raw.slice(1) : list.raw;
+  list.sel=new Set(); activeRow=0;
+  text.value=list.fields.map(f=>"{"+f+"}").join("\n");
+  $("textHint").textContent="Template for every label. Fields: "+list.fields.map(f=>"{"+f+"}").join(" ")+
+    " — rearrange them, put two on one line, or delete the ones you don't need. Empty lines are dropped.";
+  $("listBox").hidden=false; $("listClear").hidden=false;
+  renderRows(); $("size").value=list.size; draw();
+}
+
+function renderRows(){
+  const q=$("listFilter").value.trim().toLowerCase(), box=$("listRows");
+  box.textContent=""; list.shown=[];
+  list.rows.forEach((r,i)=>{
+    const s=r.filter(Boolean).join(", ").replace(/\s+/g," ");
+    if(q&&!s.toLowerCase().includes(q)) return;
+    list.shown.push(i);
+    const el=document.createElement("label"), cb=document.createElement("input"), sp=document.createElement("span");
+    el.className="chk"+(i===activeRow?" on":""); el.title=s;
+    cb.type="checkbox"; cb.checked=list.sel.has(i); sp.textContent=s;
+    cb.addEventListener("change",()=>{
+      cb.checked ? list.sel.add(i) : list.sel.delete(i);
+      box.querySelectorAll(".on").forEach(x=>x.classList.remove("on")); el.classList.add("on");
+      activeRow=i; $("size").value=list.size; draw(); counts();
+    });
+    el.append(cb,sp); box.appendChild(el);
+  });
+  counts();
+}
+
+function counts(){
+  const n=list?list.sel.size:0, s=n===1?"":"s";
+  $("printBtn").textContent=list ? "Print "+n+" label"+s+"…" : "Print / Save as PDF…";
+  $("printBtn").disabled=!!list&&!n;
+  $("usbPrint").textContent=list ? "Print "+n+" via USB" : "Print via USB";
+  $("listInfo").textContent=list ? list.name+": "+n+" of "+list.rows.length+" selected. Tick a row to preview it."
+    : LIST_HINT;
+}
+
+/* fit and draw each selected row in file order, then put the preview back */
+async function eachSelected(fn){
+  const keep=activeRow;
+  try{
+    for(const i of [...list.sel].sort((a,b)=>a-b)){ activeRow=i; $("size").value=list.size; draw(); await fn(); }
+  }finally{ activeRow=keep; $("size").value=list.size; draw(); }
+}
+
+$("listPick").addEventListener("click",()=>$("listFile").click());
+$("listFile").addEventListener("change",e=>{ if(e.target.files[0]) loadList(e.target.files[0]); e.target.value=""; });
+$("listHeader").addEventListener("change",buildList);
+$("listFilter").addEventListener("input",renderRows);
+$("listAll").addEventListener("click",()=>{ list.shown.forEach(i=>list.sel.add(i)); renderRows(); });
+$("listNone").addEventListener("click",()=>{ list.shown.forEach(i=>list.sel.delete(i)); renderRows(); });
+$("listClear").addEventListener("click",()=>{
+  $("size").value=list.size; list=null; text.value=plainText;
+  $("textHint").innerHTML=TEXT_HINT; $("listBox").hidden=true; $("listClear").hidden=true;
+  counts(); draw();
+});
+// auto-fit shrinks the size field per label; remember what the user actually asked for
+$("size").addEventListener("input",()=>{ if(list) list.size=$("size").value; });
 
 // restore last settings (optional, degrades gracefully)
 try{
@@ -265,8 +502,8 @@ try{
     document.querySelectorAll("#align button").forEach(x=>x.setAttribute("aria-pressed",x.dataset.v===align));}
 }catch(e){}
 window.addEventListener("beforeunload",()=>{try{
-  localStorage.setItem("labelpress",JSON.stringify({roll:rollSel.value,text:text.value,
-    size:$("size").value,margin:$("margin").value,allergen:$("allergen").checked,
+  localStorage.setItem("labelpress",JSON.stringify({roll:rollSel.value,text:list?plainText:text.value,
+    size:list?list.size:$("size").value,margin:$("margin").value,allergen:$("allergen").checked,
     autofit:$("autofit").checked,align}));}catch(e){}});
 
 $("customDims").style.display = ROLLS[+rollSel.value][1]===null ? "flex":"none";
@@ -317,7 +554,7 @@ function drawLabelCanvas(){
   x.fillStyle="#000"; x.textBaseline="top";
   const setF=b=>x.font=(b?"bold ":"")+fpx+"px Arial,Helvetica,sans-serif";
   const vlines=[];
-  text.value.split("\n").forEach(line=>{
+  labelText().split("\n").forEach(line=>{
     const runs=lineToRuns(line); const toks=[];
     runs.forEach(r=>r.t.split(/(\s+)/).forEach(s=>{ if(s.length) toks.push({t:s,b:r.b}); }));
     if(!toks.length){ vlines.push([]); return; }
@@ -396,20 +633,26 @@ async function usbConnect(){
 async function usbPrint(){
   if(!usbDev||usbEpOut==null){ ulog("Not connected."); return; }
   try{
-    draw();
-    const canvas=rasterize($("usbRotate").checked);
-    const {bpl,lines,rows}=packRaster(canvas);
-    ulog("Raster "+canvas.width+"×"+lines+" dots, "+bpl+" bytes/line…");
-    const ESC=0x1b,SYN=0x16,out=[];
-    out.push(ESC,0x42,0);                              // dot tab = 0
-    out.push(ESC,0x44,bpl);                            // bytes per line
-    out.push(ESC,0x4c, lines&0xff,(lines>>8)&0xff);    // label length (lines)
-    for(const r of rows){ out.push(SYN); for(const b of r) out.push(b); }
-    out.push(ESC,0x45);                                // form feed
-    const buf=new Uint8Array(out), CH=16384;
-    for(let o=0;o<buf.length;o+=CH) await usbDev.transferOut(usbEpOut, buf.slice(o,o+CH));
-    ulog("✓ Sent "+buf.length+" bytes. Check the printer.");
+    if(!list){ draw(); await usbSendLabel(); }
+    else if(!list.sel.size) ulog("No addresses selected.");
+    else await eachSelected(usbSendLabel);
   }catch(e){ ulog("✖ print error: "+e.name+": "+e.message); }
+}
+
+/* send the label currently drawn in the preview as one print job */
+async function usbSendLabel(){
+  const canvas=rasterize($("usbRotate").checked);
+  const {bpl,lines,rows}=packRaster(canvas);
+  ulog("Raster "+canvas.width+"×"+lines+" dots, "+bpl+" bytes/line…");
+  const ESC=0x1b,SYN=0x16,out=[];
+  out.push(ESC,0x42,0);                              // dot tab = 0
+  out.push(ESC,0x44,bpl);                            // bytes per line
+  out.push(ESC,0x4c, lines&0xff,(lines>>8)&0xff);    // label length (lines)
+  for(const r of rows){ out.push(SYN); for(const b of r) out.push(b); }
+  out.push(ESC,0x45);                                // form feed
+  const buf=new Uint8Array(out), CH=16384;
+  for(let o=0;o<buf.length;o+=CH) await usbDev.transferOut(usbEpOut, buf.slice(o,o+CH));
+  ulog("✓ Sent "+buf.length+" bytes. Check the printer.");
 }
 
 $("usbConnect").addEventListener("click",usbConnect);

@@ -17,9 +17,21 @@ DYMO Label v8 is a 32-bit-era app that breaks on recent macOS and Apple Silicon,
 - Exact-size output — the print page is generated at the label's real millimetre dimensions via CSS `@page`, so it prints 1:1 with no scaling.
 - **Auto-fit**: shrinks the font until the text fits the label.
 - **Allergen bolding** for UK/EU food labels — auto-bolds the 14 FSA allergens (egg, soya, milk, wheat, nuts…), or bold any words yourself with `**double asterisks**`.
+- **Address lists** — load a `.csv` or `.xlsx`, tick the rows you want, and print one label per row (see below).
 - Left / centre / right alignment, adjustable margin.
 - Remembers your last label between sessions.
 - **Direct USB printing (experimental)** — prints straight to the printer over WebUSB, with no OS print driver at all (see below).
+
+## Printing from an address list
+
+Click **Load CSV / Excel…** and pick a `.csv` (comma, semicolon or tab separated) or an `.xlsx` (the first sheet is used). The file is read in the browser and never uploaded or stored.
+
+- The **Text** box becomes a template with one `{Column}` field per column. Rearrange the fields, put two on one line (`{City} {Postcode}`), add fixed text or `**bold**`, and delete the ones you don't want. Lines whose fields are empty for a row are left out.
+- Tick the rows to print; ticking one also previews it. **Filter** narrows a long list, and **Select all** applies to the rows currently shown.
+- Untick **First row is column names** if the file has no header; the fields are then `{A}`, `{B}`, `{C}`…
+- **Print N labels…** sends one label per page to the system dialog; **Print N via USB** sends them one after another. Auto-fit is applied to each label separately.
+
+Old `.xls` files aren't supported — save them as `.xlsx` or CSV. Postcodes that Excel stored as numbers have already lost their leading zeros in the file; format that column as text before saving.
 
 ## Direct USB printing (experimental)
 
